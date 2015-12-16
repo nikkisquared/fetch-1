@@ -468,6 +468,38 @@ impl Request {
                                        _credentials_flag: bool,
                                        _authentication_fetch_flag: bool) -> Response {
         // TODO: Implement HTTP network or cache fetch spec
+
+        // TODO: Implement Window enum for Request
+        let request_has_no_window = true;
+
+        // Step 1
+        // TODO make an Rc<Request> with RefCell<> fields, or an Rc<RefCell<Request>>
+        if request_has_no_window && self.redirect_mode != RedirectMode::Follow {
+            // TODO how do I tell httpRequest to point to request?
+            let mut httpRequest = self;
+        } else {
+            let mut httpRequest = self.clone();
+        }
+
+        // Step 2
+        let content_length_value = None;
+
+        match httpRequest.body {
+            // Step 3
+            None => match request.method {
+                Method::Head | Method::Post | Method::Put =>
+                    content_length_value = 0;
+            }
+            // Step 4
+            // TODO how do I get the length of body?
+            Some(t) => content_length_value = httpRequest.body
+        }
+
+        // Step 5
+        if content_length_value != None {
+
+        }
+
         Response::network_error()
     }
 
