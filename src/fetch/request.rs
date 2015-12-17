@@ -48,7 +48,7 @@ pub enum ContextFrameType {
 
 /// A [referer](https://fetch.spec.whatwg.org/#concept-request-referrer)
 pub enum Referer {
-    RefererNone,
+    NoReferer,
     Client,
     RefererUrl(Url)
 }
@@ -114,6 +114,7 @@ pub struct Request {
     pub context_frame_type: ContextFrameType,
     pub origin: Option<Url>, // FIXME: Use Url::Origin
     pub force_origin_header: bool,
+    pub omit_origin_header: bool,
     pub same_origin_data: bool,
     pub referer: Referer,
     pub authentication: bool,
@@ -143,6 +144,7 @@ impl Request {
             context_frame_type: ContextFrameType::ContextNone,
             origin: None,
             force_origin_header: false,
+            omit_origin_header: false,
             same_origin_data: false,
             referer: Referer::Client,
             authentication: false,
@@ -465,8 +467,8 @@ impl Request {
 
     /// [HTTP network or cache fetch](https://fetch.spec.whatwg.org#http-network-or-cache-fetch)
     pub fn http_network_or_cache_fetch(&mut self,
-                                       _credentials_flag: bool,
-                                       _authentication_fetch_flag: bool) -> Response {
+                                       credentials_flag: bool,
+                                       authentication_fetch_flag: bool) -> Response {
         // TODO: Implement HTTP network or cache fetch spec
 
         // TODO: Implement Window enum for Request
@@ -488,18 +490,134 @@ impl Request {
             // Step 3
             None => match request.method {
                 Method::Head | Method::Post | Method::Put =>
-                    content_length_value = 0;
-            }
+                    content_length_value = 0
+            };
             // Step 4
             // TODO how do I get the length of body?
             Some(t) => content_length_value = httpRequest.body
-        }
+        };
 
         // Step 5
         if content_length_value != None {
-
+            httpRequest.headers.set(ContentLength(content_length_value as u64));
         }
 
+        // Step 6
+        if httpRequest.referer == Referer::NoReferer {
+            httpRequest.headers.set(Referer("".to_owned()));
+        } else {
+            // TODO how do I serialize this?
+            httpRequest.headers.set(Referer(httpRequest.referer));
+        }
+
+        // Step 7
+        if httpRequest.omit_origin_header == false {
+            // TODO wait for https://github.com/hyperium/hyper/pull/691
+            // httpRequest.headers.set(Origin(httpRequest.origin));
+        }
+
+        // Step 8
+        if !httpRequest.headers.has::<UserAgent>() {
+            // TODO what is an appropiate UserAgent value?
+            // https://github.com/servo/servo/blob/master/components/util/opts.rs#L398-L447
+            httpRequest.headers.set(UserAgent("".to_owned()));
+        }
+
+        // Step 9
+        if httpRequest.cache_mode == CacheMode::Default && is_no_store_cache(httpRequest.headers) {
+            httpRequest.cache_mode = CacheMode::NoStore;
+        }
+
+        // Step 10
+        // TODO this step
+
+        // Step 11
+        // TODO none of this step can be implemented
+        if credentials_flag {
+            // Substep 1
+            // TODO http://mxr.mozilla.org/servo/source/components/net/http_loader.rs#504
+
+            // Substep 2
+            // let authorization_value = None;
+
+            // Substep 3
+            // Substep 4
+            // Substep 5
+        }
+
+        // Step 12
+        // TODO this step can't be implemented
+
+        // Step 13
+        let response = None;
+
+        // Step 14
+        // TODO have a HTTP cache to check for a completed response
+        if httpRequest.cache_mode != CacheMode::NoStore && httpRequest.cache_mode != CacheMode::Reload {
+            // Substep 1
+            if httpRequest.cache_mode == CacheMode::ForceCache {
+                // TODO pull response from HTTP cache
+                // response = httpRequest
+            }
+
+            // Substep 2
+            // TODO check if response in HTTP cache doesn't need revalidation
+            if httpRequest.cache_mode == CacheMode::Default {
+                // TODO pull response from HTTP cache
+                // response = httpRequest
+                // TODO have a cache_state for response
+                // response.cache_state = CacheState::Local;
+            }
+
+            // Substep 3
+            // TODO check if response in HTTP cache needs revalidation
+            if httpRequest.cache_mode == CacheMode::Default | httpRequest.cache_mode == CacheMode::NoCache {
+                // TODO this substep
+            }
+        }
+
+        // Step 15
+        // TODO have a HTTP cache to check for a partial response
+        if httpRequest.cache_mode == CacheMode::Default | httpRequest.cache_mode == CacheMode:ForceCache {
+            // TODO this substep
+        }
+
+        // Step 16
+        if response == None {
+            response = http_network_fetch(httpRequest, credentials);
+        }
+
+        // Step 17
+        if response.status == StatusCode::NotModified && httpRequest.cache_mode == CacheMode::Default |
+            httpRequest.cache_mode == CacheMode:NoCache {
+
+            // Substep 1
+            // TODO this substep
+            let cached_response = None;
+
+            // Substep 2
+            if cached_response == None {
+                // TODO is this the right formatting for returning a network error?
+                // return Response::network_error();
+            }
+
+            // Substep 3
+
+            // Substep 4
+            // response = cached_response;
+
+            // Substep 5
+            // TODO have a cache state to update
+            // response.cache_state == CacheState::Validated;
+        }
+
+        // Step 18
+        response
+    }
+
+    /// [HTTP network fetch](https://fetch.spec.whatwg.org/#http-network-fetch)
+    pub fn http_network_fetch(&mut self, httpRequest: Request, credentials_flag: bool) -> Response {
+        // TODO: Implement HTTP network fetch spec
         Response::network_error()
     }
 
