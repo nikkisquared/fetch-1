@@ -163,6 +163,10 @@ impl Request {
     fn get_last_url_string(&self) -> String {
         self.url_list.last().unwrap().serialize()
     }
+
+    fn current_url(&self) -> Option<Url> {
+        self.url_list.last()
+    }
 }
 
 fn fetch_async(Rc<RefCell<Request>>, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
@@ -602,17 +606,30 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     modify_request_headers(httpRequest.headers);
 
     // Step 11
-    // TODO none of this step can be implemented
+    // TODO some this step can't be implemented yet
     if credentials_flag {
         // Substep 1
         // TODO http://mxr.mozilla.org/servo/source/components/net/http_loader.rs#504
 
         // Substep 2
-        // let authorization_value = None;
+        let authorization_value = None;
 
         // Substep 3
+        // TODO be able to retrieve https://fetch.spec.whatwg.org/#authentication-entry
+
         // Substep 4
+        if authentication_fetch_flag {
+            let current_url = httpRequest.current_url();
+            if current_url.username.len() == 0 | !current_url.password.is_none() {
+                // TODO spec needs to define how to convert this to an `Authorization` value
+                authorization_value = current_url;
+            }
+        }
+
         // Substep 5
+        if !authorization_value.is_none() {
+            httpRequest.headers.set(Authorization(authorization_value);
+        }
     }
 
     // Step 12
@@ -639,8 +656,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
         if !revalidation_needed && httpRequest.cache_mode == CacheMode::Default {
             // TODO pull response from HTTP cache
             // response = httpRequest
-            // TODO have a cache_state for response
-            // response.cache_state = CacheState::Local;
+            response.cache_state = CacheState::Local;
         }
 
         // Substep 3
