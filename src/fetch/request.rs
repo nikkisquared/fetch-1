@@ -5,13 +5,14 @@
 use fetch::cors_cache::{CORSCache, CacheRequestDetails};
 use fetch::response::ResponseMethods;
 use hyper::header::{Accept, IfMatch, IfRange, IfUnmodifiedSince, Location};
-use hyper::header::{AcceptLanguage, ContentLanguage, HeaderView};
+use hyper::header::{AcceptLanguage, ContentLength, ContentLanguage, HeaderView};
 use hyper::header::{ContentType, Header, Headers, IfModifiedSince, IfNoneMatch};
-use hyper::header::{QualityItem, q, qitem};
+use hyper::header::{QualityItem, q, qitem, Referer as RefererHeader, UserAgent};
+use hyper::header::{Authorization};
 use hyper::method::Method;
 use hyper::mime::{Attr, Mime, SubLevel, TopLevel, Value};
 use hyper::status::StatusCode;
-use net_traits::{AsyncFetchListener, Response};
+use net_traits::{AsyncFetchListener, CacheState, Response};
 use net_traits::{ResponseType, Metadata};
 use std::ascii::AsciiExt;
 use std::cell::RefCell;
@@ -164,20 +165,20 @@ impl Request {
         self.url_list.last().unwrap().serialize()
     }
 
-    fn current_url(&self) -> Option<Url> {
+    fn current_url(&self) -> Option<&Url> {
         self.url_list.last()
     }
 }
 
-fn fetch_async(Rc<RefCell<Request>>, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
-    spawn_named(format!("fetch for {:?}", request.get_last_url_string()), move || {
-        let res = request.fetch(cors_flag);
+fn fetch_async(request: Rc<RefCell<Request>>, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
+    spawn_named(format!("fetch for {:?}", request.borrow().get_last_url_string()), move || {
+        let res = fetch(cors_flag);
         listener.response_available(res);
     })
 }
 
 /// [Fetch](https://fetch.spec.whatwg.org#concept-fetch)
-fn fetch(Rc<RefCell<Request>>, cors_flag: bool) -> Response {
+fn fetch(request: Rc<RefCell<Request>>, cors_flag: bool) -> Response {
 
     // Step 1
     if request.context != Context::Fetch && !request.headers.has::<Accept>() {
@@ -233,13 +234,13 @@ fn fetch(Rc<RefCell<Request>>, cors_flag: bool) -> Response {
 }
 
 /// [Main fetch](https://fetch.spec.whatwg.org/#concept-main-fetch)
-fn main_fetch(Rc<RefCell<Request>>, _cors_flag: bool) -> Response {
+fn main_fetch(request: Rc<RefCell<Request>>, _cors_flag: bool) -> Response {
     // TODO: Implement main fetch spec
     Response::network_error()
 }
 
 /// [Basic fetch](https://fetch.spec.whatwg.org#basic-fetch)
-fn basic_fetch(Rc<RefCell<Request>>) -> Response {
+fn basic_fetch(request: Rc<RefCell<Request>>) -> Response {
 
     let scheme = request.url_list.last().unwrap().scheme.clone();
 
@@ -272,7 +273,7 @@ fn basic_fetch(Rc<RefCell<Request>>) -> Response {
     }
 }
 
-fn http_fetch_async(Rc<RefCell<Request>>,
+fn http_fetch_async(request: Rc<RefCell<Request>>,
                     cors_flag: bool,
                     cors_preflight_flag: bool,
                     authentication_fetch_flag: bool,
@@ -286,7 +287,7 @@ fn http_fetch_async(Rc<RefCell<Request>>,
 }
 
 /// [HTTP fetch](https://fetch.spec.whatwg.org#http-fetch)
-fn http_fetch(Rc<RefCell<Request>>,
+fn http_fetch(request: Rc<RefCell<Request>>,
               cors_flag: bool,
               cors_preflight_flag: bool,
               authentication_fetch_flag: bool) -> Response {
@@ -555,19 +556,18 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     } else {
         self_copy = request.clone();
         &mut self_copy
-    }
+    };
 
     // Step 2
     let content_length_value = None;
 
-    match httpRequest.body {
-        // Step 3
-        None => match request.method {
-            Method::Head | Method::Post | Method::Put =>
-                content_length_value = 0
-        };
+    let content_length_value = match httpRequest.body {
+        None =>
+            if request.method == Method::Head || request.method == Method::Post || request.method == Method::Put {
+                Some(0)
+            },
         // Step 4
-        Some(t) => content_length_value = httpRequest.body.len()
+        Some(t) => Some(httpRequest.body.len())
     };
 
     // Step 5
@@ -577,13 +577,13 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 
     // Step 6
     if httpRequest.referer == Referer::NoReferer {
-        httpRequest.headers.set(Referer("".to_owned()));
+        httpRequest.headers.set(RefererHeader("".to_owned()));
     } else if httpRequest.referer == Referer::Client {
         // it should be impossible for referer to be Client during fetching
         // https://fetch.spec.whatwg.org/#concept-request-referrer
         unreachable!()
-    } else
-        httpRequest.headers.set(Referer(httpRequest.referer.serialize()));
+    } else {
+        httpRequest.headers.set(RefererHeader(httpRequest.referer.serialize()));
     }
 
     // Step 7
@@ -603,7 +603,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     }
 
     // Step 10
-    modify_request_headers(httpRequest.headers);
+    // modify_request_headers(httpRequest.headers);
 
     // Step 11
     // TODO some this step can't be implemented yet
@@ -620,7 +620,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
         // Substep 4
         if authentication_fetch_flag {
             let current_url = httpRequest.current_url();
-            if current_url.username.len() == 0 | !current_url.password.is_none() {
+            if current_url.username.len() == 0 || !current_url.password.is_none() {
                 // TODO spec needs to define how to convert this to an `Authorization` value
                 authorization_value = current_url;
             }
@@ -628,7 +628,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 
         // Substep 5
         if !authorization_value.is_none() {
-            httpRequest.headers.set(Authorization(authorization_value);
+            httpRequest.headers.set(Authorization(authorization_value));
         }
     }
 
@@ -660,7 +660,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
         }
 
         // Substep 3
-        if revalidation_needed && httpRequest.cache_mode == CacheMode::Default |
+        if revalidation_needed && httpRequest.cache_mode == CacheMode::Default ||
             httpRequest.cache_mode == CacheMode::NoCache {
 
             // TODO this substep
@@ -669,18 +669,18 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 
     // Step 15
     // TODO have a HTTP cache to check for a partial response
-    if httpRequest.cache_mode == CacheMode::Default | httpRequest.cache_mode == CacheMode:ForceCache {
+    if httpRequest.cache_mode == CacheMode::Default || httpRequest.cache_mode == CacheMode::ForceCache {
         // TODO this substep
     }
 
     // Step 16
     if response.is_none() {
-        response = http_network_fetch(httpRequest, credentials);
+        response = http_network_fetch(httpRequest, credentials_flag);
     }
 
     // Step 17
     if response.status == StatusCode::NotModified &&
-        (httpRequest.cache_mode == CacheMode::Default | httpRequest.cache_mode == CacheMode:NoCache) {
+        (httpRequest.cache_mode == CacheMode::Default || httpRequest.cache_mode == CacheMode::NoCache) {
 
         // Substep 1
         // TODO this substep
@@ -706,19 +706,19 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 }
 
 /// [HTTP network fetch](https://fetch.spec.whatwg.org/#http-network-fetch)
-fn http_network_fetch(&mut self, httpRequest: Request, credentials_flag: bool) -> Response {
+fn http_network_fetch(request: Rc<RefCell<Request>>, httpRequest: Request, credentials_flag: bool) -> Response {
     // TODO: Implement HTTP network fetch spec
     Response::network_error()
 }
 
 /// [CORS preflight fetch](https://fetch.spec.whatwg.org#cors-preflight-fetch)
-fn preflight_fetch(&mut self) -> Response {
+fn preflight_fetch(request: Rc<RefCell<Request>>) -> Response {
     // TODO: Implement preflight fetch spec
     Response::network_error()
 }
 
 /// [CORS check](https://fetch.spec.whatwg.org#concept-cors-check)
-fn cors_check(&mut self, response: &Response) -> Result<(), ()> {
+fn cors_check(request: Rc<RefCell<Request>>, response: &Response) -> Result<(), ()> {
     // TODO: Implement CORS check spec
     Err(())
 }

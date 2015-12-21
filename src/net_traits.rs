@@ -40,6 +40,7 @@ pub enum ResponseBody {
 }
 
 // [Cache state](https://fetch.spec.whatwg.org/#concept-response-cache-state)
+#[derive(Clone)]
 pub enum CacheState {
     None,
     Local,
@@ -80,6 +81,7 @@ impl Response {
             status: None,
             headers: Headers::new(),
             body: ResponseBody::Empty,
+            cache_state: CacheState::None,
             internal_response: None
         }
     }
