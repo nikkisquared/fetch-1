@@ -172,7 +172,7 @@ impl Request {
 
 fn fetch_async(request: Rc<RefCell<Request>>, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
     spawn_named(format!("fetch for {:?}", request.borrow().get_last_url_string()), move || {
-        let res = fetch(cors_flag);
+        let res = fetch(request, cors_flag);
         listener.response_available(res);
     })
 }
@@ -181,10 +181,10 @@ fn fetch_async(request: Rc<RefCell<Request>>, cors_flag: bool, listener: Box<Asy
 fn fetch(request: Rc<RefCell<Request>>, cors_flag: bool) -> Response {
 
     // Step 1
-    if request.context != Context::Fetch && !request.headers.has::<Accept>() {
+    if request.borrow().context != Context::Fetch && !request.borrow().headers.has::<Accept>() {
 
         // Substep 1
-        let value = match request.context {
+        let value = match request.borrow().context {
 
             Context::Favicon | Context::Image | Context::ImageSet
                 => vec![qitem(Mime(TopLevel::Image, SubLevel::Png, vec![])),
@@ -204,7 +204,7 @@ fn fetch(request: Rc<RefCell<Request>>, cors_flag: bool) -> Response {
                     QualityItem::new(Mime(TopLevel::Application, SubLevel::Xml, vec![]), q(0.9)),
                     QualityItem::new(Mime(TopLevel::Star, SubLevel::Star, vec![]), q(0.8))],
 
-            Context::Internal if request.context_frame_type != ContextFrameType::ContextNone
+            Context::Internal if request.borrow().context_frame_type != ContextFrameType::ContextNone
                 => vec![qitem(Mime(TopLevel::Text, SubLevel::Html, vec![])),
                     // FIXME: This should properly generate a MimeType that has a
                     // SubLevel of xhtml+xml (https://github.com/hyperium/mime.rs/issues/22)
@@ -219,18 +219,18 @@ fn fetch(request: Rc<RefCell<Request>>, cors_flag: bool) -> Response {
         };
 
         // Substep 2
-        request.headers.set(Accept(value));
+        request.borrow_mut().headers.set(Accept(value));
     }
 
     // Step 2
-    if request.context != Context::Fetch && !request.headers.has::<AcceptLanguage>() {
-        request.headers.set(AcceptLanguage(vec![qitem("en-US".parse().unwrap())]));
+    if request.borrow().context != Context::Fetch && !request.borrow().headers.has::<AcceptLanguage>() {
+        request.borrow_mut().headers.set(AcceptLanguage(vec![qitem("en-US".parse().unwrap())]));
     }
 
     // TODO: Figure out what a Priority object is
     // Step 3
     // Step 4
-    request.main_fetch(cors_flag)
+    main_fetch(request, cors_flag)
 }
 
 /// [Main fetch](https://fetch.spec.whatwg.org/#concept-main-fetch)
@@ -242,12 +242,12 @@ fn main_fetch(request: Rc<RefCell<Request>>, _cors_flag: bool) -> Response {
 /// [Basic fetch](https://fetch.spec.whatwg.org#basic-fetch)
 fn basic_fetch(request: Rc<RefCell<Request>>) -> Response {
 
-    let scheme = request.url_list.last().unwrap().scheme.clone();
+    let scheme = request.borrow().url_list.last().unwrap().scheme.clone();
 
     match &*scheme {
 
         "about" => {
-            let url = request.url_list.last().unwrap();
+            let url = request.borrow().url_list.last().unwrap();
             match url.non_relative_scheme_data() {
                 Some(s) if &*s == "blank" => {
                     let mut response = Response::new();
@@ -261,7 +261,7 @@ fn basic_fetch(request: Rc<RefCell<Request>>) -> Response {
         },
 
         "http" | "https" => {
-            request.http_fetch(false, false, false)
+            http_fetch(request, false, false, false)
         },
 
         "blob" | "data" | "file" | "ftp" => {
@@ -279,9 +279,8 @@ fn http_fetch_async(request: Rc<RefCell<Request>>,
                     authentication_fetch_flag: bool,
                     listener: Box<AsyncFetchListener + Send>) {
 
-    spawn_named(format!("http_fetch for {:?}", request.get_last_url_string()), move || {
-        let res = request.http_fetch(cors_flag, cors_preflight_flag,
-                                  authentication_fetch_flag);
+    spawn_named(format!("http_fetch for {:?}", request.borrow().get_last_url_string()), move || {
+        let res = http_fetch(request, cors_flag, cors_preflight_flag, authentication_fetch_flag);
         listener.response_available(res);
     });
 }
@@ -299,7 +298,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
     let mut actual_response: Option<Rc<RefCell<Response>>> = None;
 
     // Step 3
-    if !request.skip_service_worker && !request.is_service_worker_global_scope {
+    if !request.borrow().skip_service_worker && !request.borrow().is_service_worker_global_scope {
 
         // TODO: Substep 1 (handle fetch unimplemented)
         if let Some(ref res) = response {
@@ -313,9 +312,9 @@ fn http_fetch(request: Rc<RefCell<Request>>,
 
             // Substep 3
             if (resp.response_type == ResponseType::Opaque &&
-                request.mode != RequestMode::NoCORS) ||
+                request.borrow().mode != RequestMode::NoCORS) ||
                (resp.response_type == ResponseType::OpaqueRedirect &&
-                request.redirect_mode != RedirectMode::Manual) ||
+                request.borrow().redirect_mode != RedirectMode::Manual) ||
                resp.response_type == ResponseType::Error {
                 return Response::network_error();
             }
@@ -325,7 +324,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
         if let Some(ref res) = actual_response {
             let mut resp = res.borrow_mut();
             if resp.url_list.is_empty() {
-                resp.url_list = request.url_list.clone();
+                resp.url_list = request.borrow().url_list.clone();
             }
         }
 
@@ -341,21 +340,21 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             let mut method_mismatch = false;
             let mut header_mismatch = false;
 
-            if let Some(ref mut cache) = request.cache {
+            if let Some(ref mut cache) = request.borrow().cache {
                 // FIXME: Once Url::Origin is available, rewrite origin to
                 // take an Origin instead of a Url
-                let origin = request.origin.clone().unwrap_or(Url::parse("").unwrap());
-                let url = request.url_list.last().unwrap().clone();
-                let credentials = request.credentials_mode == CredentialsMode::Include;
+                let origin = request.borrow().origin.clone().unwrap_or(Url::parse("").unwrap());
+                let url = request.borrow().url_list.last().unwrap().clone();
+                let credentials = request.borrow().credentials_mode == CredentialsMode::Include;
                 let method_cache_match = cache.match_method(CacheRequestDetails {
                     origin: origin.clone(),
                     destination: url.clone(),
                     credentials: credentials
-                }, request.method.clone());
+                }, request.borrow().method.clone());
 
-                method_mismatch = !method_cache_match && (!is_simple_method(&request.method) ||
-                    request.mode == RequestMode::ForcedPreflightMode);
-                header_mismatch = request.headers.iter().any(|view|
+                method_mismatch = !method_cache_match && (!is_simple_method(&request.borrow().method) ||
+                    request.borrow().mode == RequestMode::ForcedPreflightMode);
+                header_mismatch = request.borrow().headers.iter().any(|view|
                     !cache.match_header(CacheRequestDetails {
                         origin: origin.clone(),
                         destination: url.clone(),
@@ -365,7 +364,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             }
 
             if method_mismatch || header_mismatch {
-                let preflight_result = request.preflight_fetch();
+                let preflight_result = preflight_fetch(request);
                 if preflight_result.response_type == ResponseType::Error {
                     return Response::network_error();
                 }
@@ -374,13 +373,13 @@ fn http_fetch(request: Rc<RefCell<Request>>,
         }
 
         // Substep 2
-        request.skip_service_worker = true;
+        request.borrow().skip_service_worker = true;
 
         // Substep 3
-        let credentials = match request.credentials_mode {
+        let credentials = match request.borrow().credentials_mode {
             CredentialsMode::Include => true,
             CredentialsMode::CredentialsSameOrigin if (!cors_flag ||
-                request.response_tainting == ResponseTainting::Opaque)
+                request.borrow().response_tainting == ResponseTainting::Opaque)
                 => true,
             _ => false
         };
@@ -389,7 +388,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
         let fetch_result = http_network_or_cache_fetch(request, credentials, authentication_fetch_flag);
 
         // Substep 5
-        if cors_flag && request.cors_check(&fetch_result).is_err() {
+        if cors_flag && cors_check(request, &fetch_result).is_err() {
             return Response::network_error();
         }
 
@@ -408,7 +407,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
         StatusCode::TemporaryRedirect | StatusCode::PermanentRedirect => {
 
             // Step 1
-            if request.redirect_mode == RedirectMode::Error {
+            if request.borrow().redirect_mode == RedirectMode::Error {
                 return Response::network_error();
             }
 
@@ -423,7 +422,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             };
 
             // Step 5
-            let location_url = UrlParser::new().base_url(request.url_list.last().unwrap()).parse(&*location);
+            let location_url = UrlParser::new().base_url(request.borrow().url_list.last().unwrap()).parse(&*location);
 
             // Step 6
             
@@ -434,14 +433,14 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             };
             
             // Step 7
-            if request.redirect_count == 20 {
+            if request.borrow().redirect_count == 20 {
                 return Response::network_error();
             }
             
             // Step 8
-            request.redirect_count += 1;
+            request.borrow().redirect_count += 1;
 
-            match request.redirect_mode {
+            match request.borrow().redirect_mode {
             
                 // Step 9
                 RedirectMode::Manual => {
@@ -453,8 +452,9 @@ fn http_fetch(request: Rc<RefCell<Request>>,
 
                     // Substep 1
                     // FIXME: Use Url::origin
-                    // if (request.mode == RequestMode::CORSMode || request.mode == RequestMode::ForcedPreflightMode) &&
-                    //     location_url.origin() != request.url.origin() &&
+                    // if (request.borrow().mode == RequestMode::CORSMode ||
+                    //     request.borrow().mode == RequestMode::ForcedPreflightMode) &&
+                    //     location_url.origin() != request.borrow().url.origin() &&
                     //     has_credentials(&location_url) {
                     //     return Response::network_error();
                     // }
@@ -466,23 +466,23 @@ fn http_fetch(request: Rc<RefCell<Request>>,
 
                     // Substep 3
                     // FIXME: Use Url::origin
-                    // if cors_flag && location_url.origin() != request.url.origin() {
-                    //     request.origin = Origin::UID(OpaqueOrigin);
+                    // if cors_flag && location_url.origin() != request.borrow().url.origin() {
+                    //     request.borrow_mut().origin = Origin::UID(OpaqueOrigin);
                     // }
 
                     // Substep 4
                     if actual_response.status.unwrap() == StatusCode::SeeOther ||
                        ((actual_response.status.unwrap() == StatusCode::MovedPermanently ||
                          actual_response.status.unwrap() == StatusCode::Found) &&
-                        request.method == Method::Post) {
-                        request.method = Method::Get;
+                        request.borrow().method == Method::Post) {
+                        request.borrow().method = Method::Get;
                     }
 
                     // Substep 5
-                    request.url_list.push(location_url);
+                    request.borrow().url_list.push(location_url);
 
                     // Substep 6
-                    return request.main_fetch(cors_flag);
+                    return main_fetch(request, cors_flag);
                 }
                 RedirectMode::Error => { panic!("RedirectMode is Error after step 8") }
             }
@@ -501,12 +501,12 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             // TODO: Spec says requires testing on multiple WWW-Authenticate headers
 
             // Step 3
-            if !request.use_url_credentials || authentication_fetch_flag {
+            if !request.borrow().use_url_credentials || authentication_fetch_flag {
                 // TODO: Prompt the user for username and password from the window
             }
 
             // Step 4
-            return request.http_fetch(cors_flag, cors_preflight_flag, true);
+            return http_fetch(request, cors_flag, cors_preflight_flag, true);
         }
 
         // Code 407
@@ -522,7 +522,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             // TODO: Prompt the user for proxy authentication credentials
 
             // Step 4
-            return request.http_fetch(cors_flag, cors_preflight_flag, authentication_fetch_flag);
+            return http_fetch(request, cors_flag, cors_preflight_flag, authentication_fetch_flag);
         }
 
         _ => { }
