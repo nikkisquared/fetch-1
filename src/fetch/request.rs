@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use fetch::cors_cache::{CORSCache, CacheRequestDetails};
+use fetch::cors_cache::{BasicCORSCache, CORSCache, CacheRequestDetails};
 use fetch::response::ResponseMethods;
 use hyper::header::{Accept, IfMatch, IfRange, IfUnmodifiedSince, Location};
 use hyper::header::{AcceptLanguage, ContentLength, ContentLanguage, HeaderView};
 use hyper::header::{ContentType, Header, Headers, IfModifiedSince, IfNoneMatch};
 use hyper::header::{QualityItem, q, qitem, Referer as RefererHeader, UserAgent};
-use hyper::header::{Authorization};
+use hyper::header::{Authorization, Basic};
 use hyper::method::Method;
 use hyper::mime::{Attr, Mime, SubLevel, TopLevel, Value};
 use hyper::status::StatusCode;
@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::thread;
-use url::{Url, UrlParser};
+use url::{Origin, Url, UrlParser};
 
 fn spawn_named<F>(name: String, f: F)
     where F: FnOnce() + Send + 'static
@@ -35,7 +35,7 @@ pub enum Context {
     Favicon, Fetch, Font, Form, Frame, Hyperlink, IFrame, Image,
     ImageSet, Import, Internal, Location, Manifest, MetaRefresh, Object,
     Ping, Plugin, Prefetch, PreRender, Script, ServiceWorker, SharedWorker,
-    Subresource, Style, Track, Video, Worker, XMLHttpRequest, XSLT
+    Subresource, Style, Track, Video, Worker, XMLHttp_request, XSLT
 }
 
 /// A [request context frame type](https://fetch.spec.whatwg.org/#concept-request-context-frame-type)
@@ -48,6 +48,7 @@ pub enum ContextFrameType {
 }
 
 /// A [referer](https://fetch.spec.whatwg.org/#concept-request-referrer)
+#[derive(Clone, PartialEq)]
 pub enum Referer {
     NoReferer,
     Client,
@@ -99,6 +100,7 @@ pub enum ResponseTainting {
 }
 
 /// A [Request](https://fetch.spec.whatwg.org/#requests) as defined by the Fetch spec
+#[derive(Clone)]
 pub struct Request {
     pub method: Method,
     // Use the last method on url_list to act as spec url field
@@ -126,8 +128,7 @@ pub struct Request {
     pub cache_mode: CacheMode,
     pub redirect_mode: RedirectMode,
     pub redirect_count: usize,
-    pub response_tainting: ResponseTainting,
-    pub cache: Option<Box<CORSCache + Send>>
+    pub response_tainting: ResponseTainting
 }
 
 impl Request {
@@ -165,13 +166,14 @@ impl Request {
         self.url_list.last().unwrap().serialize()
     }
 
-    fn current_url(&self) -> Option<&Url> {
-        self.url_list.last()
+    fn current_url(&self) -> &Url {
+        self.url_list.last().unwrap()
     }
 }
 
-fn fetch_async(request: Rc<RefCell<Request>>, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
-    spawn_named(format!("fetch for {:?}", request.borrow().get_last_url_string()), move || {
+fn fetch_async(request: Request, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
+    spawn_named(format!("fetch for {:?}", request.get_last_url_string()), move || {
+        let request = Rc::new(RefCell::new(request));
         let res = fetch(request, cors_flag);
         listener.response_available(res);
     })
@@ -261,7 +263,7 @@ fn basic_fetch(request: Rc<RefCell<Request>>) -> Response {
         },
 
         "http" | "https" => {
-            http_fetch(request, false, false, false)
+            http_fetch(request, BasicCORSCache(vec![]), false, false, false)
         },
 
         "blob" | "data" | "file" | "ftp" => {
@@ -273,20 +275,24 @@ fn basic_fetch(request: Rc<RefCell<Request>>) -> Response {
     }
 }
 
-fn http_fetch_async(request: Rc<RefCell<Request>>,
+fn http_fetch_async(request: Request,
                     cors_flag: bool,
                     cors_preflight_flag: bool,
                     authentication_fetch_flag: bool,
                     listener: Box<AsyncFetchListener + Send>) {
 
-    spawn_named(format!("http_fetch for {:?}", request.borrow().get_last_url_string()), move || {
-        let res = http_fetch(request, cors_flag, cors_preflight_flag, authentication_fetch_flag);
+    spawn_named(format!("http_fetch for {:?}", request.get_last_url_string()), move || {
+        let request = Rc::new(RefCell::new(request));
+        let res = http_fetch(request, BasicCORSCache(vec![]),
+                             cors_flag, cors_preflight_flag,
+                             authentication_fetch_flag);
         listener.response_available(res);
     });
 }
 
 /// [HTTP fetch](https://fetch.spec.whatwg.org#http-fetch)
 fn http_fetch(request: Rc<RefCell<Request>>,
+              cache: BasicCORSCache,
               cors_flag: bool,
               cors_preflight_flag: bool,
               authentication_fetch_flag: bool) -> Response {
@@ -506,7 +512,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             }
 
             // Step 4
-            return http_fetch(request, cors_flag, cors_preflight_flag, true);
+            return http_fetch(request, BasicCORSCache(vec![]), cors_flag, cors_preflight_flag, true);
         }
 
         // Code 407
@@ -522,7 +528,9 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             // TODO: Prompt the user for proxy authentication credentials
 
             // Step 4
-            return http_fetch(request, cors_flag, cors_preflight_flag, authentication_fetch_flag);
+            return http_fetch(request, BasicCORSCache(vec![]),
+                              cors_flag, cors_preflight_flag,
+                              authentication_fetch_flag);
         }
 
         _ => { }
@@ -549,61 +557,65 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     let request_has_no_window = true;
 
     // Step 1
-    // TODO make an Rc<Request> with RefCell<> fields, or an Rc<RefCell<Request>>
     let mut self_copy;
-    let httpRequest = if request_has_no_window && request.redirect_mode != RedirectMode::Follow {
+    let http_request = if request_has_no_window && 
+        request.borrow().redirect_mode != RedirectMode::Follow {
         request
     } else {
-        self_copy = request.clone();
-        &mut self_copy
+        Rc::new(RefCell::new(request.borrow().clone()))
     };
 
     // Step 2
     let content_length_value = None;
 
-    let content_length_value = match httpRequest.body {
+    let content_length_value = match http_request.borrow().body {
         None =>
-            if request.method == Method::Head || request.method == Method::Post || request.method == Method::Put {
-                Some(0)
+            match http_request.borrow().method {
+                Method::Head | Method::Post | Method::Put =>
+                    Some(0),
+                _ => None
             },
         // Step 4
-        Some(t) => Some(httpRequest.body.len())
+        Some(http_request_body) => Some(http_request_body.len())
     };
 
     // Step 5
     if let Some(content_length_value) = content_length_value {
-        httpRequest.headers.set(ContentLength(content_length_value as u64));
+        http_request.borrow_mut().headers.set(ContentLength(content_length_value as u64));
     }
 
     // Step 6
-    if httpRequest.referer == Referer::NoReferer {
-        httpRequest.headers.set(RefererHeader("".to_owned()));
-    } else if httpRequest.referer == Referer::Client {
-        // it should be impossible for referer to be Client during fetching
-        // https://fetch.spec.whatwg.org/#concept-request-referrer
-        unreachable!()
-    } else {
-        httpRequest.headers.set(RefererHeader(httpRequest.referer.serialize()));
-    }
+    match http_request.borrow().referer {
+        Referer::NoReferer =>
+            http_request.borrow_mut().headers.set(RefererHeader("".to_owned())),
+        Referer::RefererUrl(http_request_referer) =>
+            http_request.borrow_mut().headers.set(RefererHeader(http_request_referer.serialize())),
+        _ =>
+            // it should be impossible for referer to be anything else during fetching
+            // https://fetch.spec.whatwg.org/#concept-request-referrer
+            unreachable!()
+    };
 
     // Step 7
-    if httpRequest.omit_origin_header == false {
+    if http_request.borrow().omit_origin_header == false {
         // TODO update this when https://github.com/hyperium/hyper/pull/691 is finished
-        httpRequest.headers.set_raw("origin", httpRequest.origin.serialize());
+        if let Some(origin) = http_request.borrow().origin {
+            // http_request.borrow_mut().headers.set_raw("origin", origin);
+        }
     }
 
     // Step 8
-    if !httpRequest.headers.has::<UserAgent>() {
-        httpRequest.headers.set(UserAgent(global_user_agent().to_owned()));
+    if !http_request.borrow().headers.has::<UserAgent>() {
+        http_request.borrow_mut().headers.set(UserAgent(global_user_agent().to_owned()));
     }
 
     // Step 9
-    if httpRequest.cache_mode == CacheMode::Default && is_no_store_cache(httpRequest.headers) {
-        httpRequest.cache_mode = CacheMode::NoStore;
+    if http_request.borrow().cache_mode == CacheMode::Default && is_no_store_cache(&http_request.borrow().headers) {
+        http_request.borrow_mut().cache_mode = CacheMode::NoStore;
     }
 
     // Step 10
-    // modify_request_headers(httpRequest.headers);
+    // modify_request_headers(http_request.borrow().headers);
 
     // Step 11
     // TODO some this step can't be implemented yet
@@ -612,23 +624,30 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
         // TODO http://mxr.mozilla.org/servo/source/components/net/http_loader.rs#504
 
         // Substep 2
-        let authorization_value = None;
+        let mut authorization_value: Option<Basic> = None;
 
         // Substep 3
         // TODO be able to retrieve https://fetch.spec.whatwg.org/#authentication-entry
 
         // Substep 4
         if authentication_fetch_flag {
-            let current_url = httpRequest.current_url();
-            if current_url.username.len() == 0 || !current_url.password.is_none() {
-                // TODO spec needs to define how to convert this to an `Authorization` value
-                authorization_value = current_url;
+
+            let current_url = http_request.borrow().current_url();
+
+            authorization_value = if includes_credentials(current_url) {
+                Some(Basic {
+                    username: current_url.username().unwrap_or("").to_owned(),
+                    password: current_url.password().map(str::to_owned)
+                })
+
+            } else {
+                None
             }
         }
 
         // Substep 5
-        if !authorization_value.is_none() {
-            httpRequest.headers.set(Authorization(authorization_value));
+        if let Some(basic) = authorization_value {
+            http_request.borrow_mut().headers.set(Authorization(basic));
         }
     }
 
@@ -636,32 +655,36 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     // TODO this step can't be implemented
 
     // Step 13
-    let mut response = None;
+    let mut response: Option<Response> = None;
 
     // Step 14
     // TODO have a HTTP cache to check for a completed response
     let complete_http_response_from_cache = None;
-    if httpRequest.cache_mode != CacheMode::NoStore && httpRequest.cache_mode != CacheMode::Reload &&
+    if http_request.borrow().cache_mode != CacheMode::NoStore &&
+        http_request.borrow().cache_mode != CacheMode::Reload &&
         !complete_http_response_from_cache.is_none() {
 
         // Substep 1
-        if httpRequest.cache_mode == CacheMode::ForceCache {
+        if http_request.borrow().cache_mode == CacheMode::ForceCache {
             // TODO pull response from HTTP cache
-            // response = httpRequest
+            // response = http_request
         }
 
-        let revalidation_needed = response_needs_revalidation(response);
+        let revalidation_needed = match response {
+            Some(response) => response_needs_revalidation(&response),
+            _ => false
+        };
 
         // Substep 2
-        if !revalidation_needed && httpRequest.cache_mode == CacheMode::Default {
+        if !revalidation_needed && http_request.borrow().cache_mode == CacheMode::Default {
             // TODO pull response from HTTP cache
-            // response = httpRequest
-            response.cache_state = CacheState::Local;
+            // response = http_request
+            // response.cache_state = CacheState::Local;
         }
 
         // Substep 3
-        if revalidation_needed && httpRequest.cache_mode == CacheMode::Default ||
-            httpRequest.cache_mode == CacheMode::NoCache {
+        if revalidation_needed && http_request.borrow().cache_mode == CacheMode::Default ||
+            http_request.borrow_mut().cache_mode == CacheMode::NoCache {
 
             // TODO this substep
         }
@@ -669,36 +692,41 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 
     // Step 15
     // TODO have a HTTP cache to check for a partial response
-    if httpRequest.cache_mode == CacheMode::Default || httpRequest.cache_mode == CacheMode::ForceCache {
+    if http_request.borrow().cache_mode == CacheMode::Default ||
+        http_request.borrow().cache_mode == CacheMode::ForceCache {
         // TODO this substep
     }
 
     // Step 16
     if response.is_none() {
-        response = http_network_fetch(httpRequest, credentials_flag);
+        response = Some(http_network_fetch(request, http_request, credentials_flag));
     }
+    let response = response.unwrap();
 
     // Step 17
-    if response.status == StatusCode::NotModified &&
-        (httpRequest.cache_mode == CacheMode::Default || httpRequest.cache_mode == CacheMode::NoCache) {
+    if let Some(status) = response.status {
+        if status == StatusCode::NotModified &&
+            (http_request.borrow().cache_mode == CacheMode::Default ||
+            http_request.borrow().cache_mode == CacheMode::NoCache) {
 
-        // Substep 1
-        // TODO this substep
-        let cached_response = None;
+            // Substep 1
+            // TODO this substep
+            let cached_response = None;
 
-        // Substep 2
-        if cached_response == None {
-            return Response::network_error();
+            // Substep 2
+            if cached_response == None {
+                return Response::network_error();
+            }
+
+            // Substep 3
+
+            // Substep 4
+            // response = cached_response;
+
+            // Substep 5
+            // TODO have a cache state to update
+            // response.cache_state == CacheState::Validated;
         }
-
-        // Substep 3
-
-        // Substep 4
-        // response = cached_response;
-
-        // Substep 5
-        // TODO have a cache state to update
-        // response.cache_state == CacheState::Validated;
     }
 
     // Step 18
@@ -706,7 +734,9 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 }
 
 /// [HTTP network fetch](https://fetch.spec.whatwg.org/#http-network-fetch)
-fn http_network_fetch(request: Rc<RefCell<Request>>, httpRequest: Request, credentials_flag: bool) -> Response {
+fn http_network_fetch(request: Rc<RefCell<Request>>,
+                      http_request: Rc<RefCell<Request>>,
+                      credentials_flag: bool) -> Response {
     // TODO: Implement HTTP network fetch spec
     Response::network_error()
 }
@@ -726,7 +756,7 @@ fn cors_check(request: Rc<RefCell<Request>>, response: &Response) -> Result<(), 
 fn global_user_agent() -> String {
     // TODO have a better useragent string
     const user_agent_string: &'static str = "Servo";
-    user_agent_string
+    user_agent_string.to_owned()
 }
 
 fn has_credentials(url: &Url) -> bool {
@@ -758,6 +788,19 @@ fn is_simple_method(m: &Method) -> bool {
         Method::Get | Method::Head | Method::Post => true,
         _ => false
     }
+}
+
+fn includes_credentials(url: &Url) -> bool {
+
+    if let Some(pass) = url.password() {
+        return true
+    }
+
+    if let Some(name) = url.username() {
+        return name.len() > 0
+    }
+
+    false
 }
 
 fn response_needs_revalidation(response: &Response) -> bool {
