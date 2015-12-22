@@ -117,6 +117,11 @@ fn match_headers(cors_cache: &CORSCacheEntry, cors_req: &CacheRequestDetails) ->
 }
 
 impl BasicCORSCache {
+
+    pub fn new() -> BasicCORSCache {
+        BasicCORSCache(vec![])
+    }
+
     fn find_entry_by_header<'a>(&'a mut self, request: &CacheRequestDetails,
                                 header_name: &str) -> Option<&'a mut CORSCacheEntry> {
         self.cleanup();
