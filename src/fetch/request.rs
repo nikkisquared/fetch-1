@@ -511,7 +511,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             }
 
             // Step 4
-            return http_fetch(request.clone(), BasicCORSCache::new(), cors_flag, cors_preflight_flag, true);
+            return http_fetch(request, BasicCORSCache::new(), cors_flag, cors_preflight_flag, true);
         }
 
         // Code 407
@@ -527,7 +527,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
             // TODO: Prompt the user for proxy authentication credentials
 
             // Step 4
-            return http_fetch(request.clone(), BasicCORSCache::new(),
+            return http_fetch(request, BasicCORSCache::new(),
                               cors_flag, cors_preflight_flag,
                               authentication_fetch_flag);
         }
@@ -587,7 +587,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
             http_request.borrow_mut().headers.set(RefererHeader("".to_owned())),
         Referer::RefererUrl(ref http_request_referer) =>
             http_request.borrow_mut().headers.set(RefererHeader(http_request_referer.serialize())),
-        _ =>
+        Referer::Client =>
             // it should be impossible for referer to be anything else during fetching
             // https://fetch.spec.whatwg.org/#concept-request-referrer
             unreachable!()
@@ -596,7 +596,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     // Step 7
     if http_request.borrow().omit_origin_header == false {
         // TODO update this when https://github.com/hyperium/hyper/pull/691 is finished
-        if let Some(ref origin) = http_request.borrow().origin {
+        if let Some(ref _origin) = http_request.borrow().origin {
             // http_request.borrow_mut().headers.set_raw("origin", origin);
         }
     }
@@ -621,7 +621,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
         // TODO http://mxr.mozilla.org/servo/source/components/net/http_loader.rs#504
 
         // Substep 2
-        let mut authorization_value: Option<Basic> = None;
+        let mut authorization_value = None;
 
         // Substep 3
         // TODO be able to retrieve https://fetch.spec.whatwg.org/#authentication-entry
@@ -660,7 +660,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     let complete_http_response_from_cache: Option<Response> = None;
     if http_request.borrow().cache_mode != CacheMode::NoStore &&
         http_request.borrow().cache_mode != CacheMode::Reload &&
-        !complete_http_response_from_cache.is_none() {
+        complete_http_response_from_cache.is_some() {
 
         // Substep 1
         if http_request.borrow().cache_mode == CacheMode::ForceCache {
@@ -790,7 +790,7 @@ fn is_simple_method(m: &Method) -> bool {
 
 fn includes_credentials(url: &Url) -> bool {
 
-    if !url.password().is_none() {
+    if url.password().is_some() {
         return true
     }
 
