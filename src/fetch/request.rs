@@ -170,7 +170,7 @@ impl Request {
     }
 }
 
-fn fetch_async(request: Request, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
+pub fn fetch_async(request: Request, cors_flag: bool, listener: Box<AsyncFetchListener + Send>) {
     spawn_named(format!("fetch for {:?}", request.get_last_url_string()), move || {
         let request = Rc::new(RefCell::new(request));
         let res = fetch(request, cors_flag);
@@ -237,6 +237,7 @@ fn fetch(request: Rc<RefCell<Request>>, cors_flag: bool) -> Response {
 /// [Main fetch](https://fetch.spec.whatwg.org/#concept-main-fetch)
 fn main_fetch(request: Rc<RefCell<Request>>, _cors_flag: bool) -> Response {
     // TODO: Implement main fetch spec
+    let _ = basic_fetch(request);
     Response::network_error()
 }
 
@@ -401,8 +402,8 @@ fn http_fetch(request: Rc<RefCell<Request>>,
     }
 
     // Step 5
-    let mut actual_response = Rc::try_unwrap(actual_response.unwrap()).ok().unwrap().into_inner();
-    let mut response = Rc::try_unwrap(response.unwrap()).ok().unwrap();
+    let actual_response = Rc::try_unwrap(actual_response.unwrap()).ok().unwrap().into_inner();
+    let response = Rc::try_unwrap(response.unwrap()).ok().unwrap();
 
     match actual_response.status.unwrap() {
 
@@ -534,7 +535,7 @@ fn http_fetch(request: Rc<RefCell<Request>>,
         _ => { }
     }
 
-    let mut response = response.into_inner();
+    let response = response.into_inner();
 
     // Step 6
     if authentication_fetch_flag {
@@ -752,8 +753,8 @@ fn cors_check(request: Rc<RefCell<Request>>, response: &Response) -> Result<(), 
 
 fn global_user_agent() -> String {
     // TODO have a better useragent string
-    const user_agent_string: &'static str = "Servo";
-    user_agent_string.to_owned()
+    const USER_AGENT_STRING: &'static str = "Servo";
+    USER_AGENT_STRING.to_owned()
 }
 
 fn has_credentials(url: &Url) -> bool {
@@ -789,7 +790,7 @@ fn is_simple_method(m: &Method) -> bool {
 
 fn includes_credentials(url: &Url) -> bool {
 
-    if let Some(pass) = url.password() {
+    if !url.password().is_none() {
         return true
     }
 
