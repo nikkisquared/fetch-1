@@ -615,7 +615,7 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
     // modify_request_headers(http_request.borrow().headers);
 
     // Step 11
-    // TODO some this step can't be implemented yet
+    // TODO some of this step can't be implemented yet
     if credentials_flag {
         // Substep 1
         // TODO http://mxr.mozilla.org/servo/source/components/net/http_loader.rs#504
@@ -686,11 +686,10 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
 
             // TODO this substep
         }
-    }
 
     // Step 15
     // TODO have a HTTP cache to check for a partial response
-    if http_request.borrow().cache_mode == CacheMode::Default ||
+    } else if http_request.borrow().cache_mode == CacheMode::Default ||
         http_request.borrow().cache_mode == CacheMode::ForceCache {
         // TODO this substep
     }
@@ -722,8 +721,8 @@ fn http_network_or_cache_fetch(request: Rc<RefCell<Request>>,
             // response = cached_response;
 
             // Substep 5
-            // TODO have a cache state to update
-            // response.cache_state == CacheState::Validated;
+            // TODO cache_state is immutable?
+            // response.cache_state = CacheState::Validated;
         }
     }
 
