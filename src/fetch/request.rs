@@ -735,7 +735,47 @@ fn http_network_fetch(request: Rc<RefCell<Request>>,
                       http_request: Rc<RefCell<Request>>,
                       credentials_flag: bool) -> Response {
     // TODO: Implement HTTP network fetch spec
-    Response::network_error()
+
+    // Step 1
+    // nothing to do here, since credentials_flag is already a boolean
+
+    // Step 2
+    let connection = None;
+
+    // Step 3
+    if connection.is_none() {
+        return Response::network_error();
+    }
+
+    // Step 4
+    let response = None;
+
+    // TODO these substeps aren't possible yet
+    // Substep 1
+
+    // Substep 2
+
+    // Step 5
+
+    // Step 6
+    response.url_list = request.borrow().url_list;
+
+    // Step 7
+
+    // Step 8
+
+    // Step 9
+
+        // Substep 1
+
+        // Substep 2
+
+        // Substep 3
+
+        // Substep 4
+
+    // Step 10
+    response
 }
 
 /// [CORS preflight fetch](https://fetch.spec.whatwg.org#cors-preflight-fetch)
