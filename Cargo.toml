@@ -1,9 +1,13 @@
 [package]
 name = "fetch"
 version = "0.1.0"
-authors = ["Josh Matthews <josh@joshmatthews.net>"]
+authors = ["Josh Matthews <josh@joshmatthews.net>", "Nikki Bee"]
+
+[lib]
+name = "fetch"
+path = "src/lib.rs"
 
 [dependencies]
-hyper = { version = "0.7" }
+hyper = { version = "0.7",  default-features = false }
 time = "0.1.17"
 url = "0.5"
